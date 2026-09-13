@@ -1,18 +1,28 @@
 ---
+dependencies: []
+
 galaxy_info:
+  role_name: ludus_maas_builders
   author: Whispergate
-  description: Builds MAAS toolchain Docker images (C/MinGW, Go/Garble, Nim) for payload compilation
+  description: >-
+    Builds Docker toolchain images (C/MinGW+Clang, Go/Garble, Nim) for
+    containerised payload compilation in the MAAS build pipeline.
+  company: ""
   license: BSD-2-Clause
-  min_ansible_version: "2.10"
+  min_ansible_version: "2.14"
   platforms:
     - name: Debian
       versions:
         - bookworm
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
   galaxy_tags:
+    - ludus
     - docker
     - maas
-    - ludus
     - compiler
-dependencies: []
+
 collections:
   - community.docker

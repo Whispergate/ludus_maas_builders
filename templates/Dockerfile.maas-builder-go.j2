@@ -1,5 +1,10 @@
 FROM golang:1.23-bookworm
 
+# garble@latest may require a newer Go toolchain than this base image ships.
+# The official golang images pin GOTOOLCHAIN=local (no auto-download); switch to
+# auto so `go install` fetches the toolchain the module's go.mod requires.
+ENV GOTOOLCHAIN=auto
+
 RUN go install mvdan.cc/garble@latest
 
 RUN apt-get update && apt-get install -y --no-install-recommends \

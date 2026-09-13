@@ -1,6 +1,7 @@
 FROM debian:12-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
     gcc-mingw-w64-x86-64 \
     curl \
     git \

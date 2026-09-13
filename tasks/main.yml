@@ -1,0 +1,31 @@
+---
+- name: Create builder directory
+  ansible.builtin.file:
+    path: "{{ ludus_maas_builder_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Create shared payloads volume
+  ansible.builtin.file:
+    path: "{{ ludus_maas_shared_volume }}"
+    state: directory
+    mode: "0777"
+
+- name: Copy Dockerfiles for builder images
+  ansible.builtin.template:
+    src: "Dockerfile.{{ item }}.j2"
+    dest: "{{ ludus_maas_builder_dir }}/Dockerfile.{{ item }}"
+    mode: "0644"
+  loop: "{{ ludus_maas_builder_images }}"
+
+- name: Build toolchain Docker images
+  community.docker.docker_image:
+    name: "{{ item }}"
+    tag: latest
+    source: build
+    build:
+      path: "{{ ludus_maas_builder_dir }}"
+      dockerfile: "Dockerfile.{{ item }}"
+      pull: true
+    state: present
+  loop: "{{ ludus_maas_builder_images }}"

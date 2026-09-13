@@ -1,4 +1,12 @@
 ---
+- name: Install Python Docker SDK (required by community.docker modules)
+  ansible.builtin.apt:
+    name:
+      - python3-docker
+      - python3-requests
+    state: present
+    update_cache: true
+
 - name: Create builder directory
   ansible.builtin.file:
     path: "{{ ludus_maas_builder_dir }}"

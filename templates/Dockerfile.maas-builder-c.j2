@@ -3,9 +3,11 @@ FROM debian:12-slim AS ollvm-builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     g++ \
+    make \
     cmake \
     gnupg \
     wget \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 RUN wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor -o /usr/share/keyrings/llvm.gpg \
@@ -25,7 +27,7 @@ project(ollvm-pipeline)
 set(LT_LLVM_INSTALL_DIR "" CACHE PATH "LLVM install prefix")
 list(APPEND CMAKE_PREFIX_PATH "${LT_LLVM_INSTALL_DIR}/lib/cmake/llvm/")
 
-find_package(LLVM 18 REQUIRED CONFIG)
+find_package(LLVM REQUIRED CONFIG)
 list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
 include(AddLLVM)
 
@@ -161,7 +163,7 @@ namespace {
                 }
                 BasicBlock::iterator InsertPt = entryBlock->getFirstNonPHIOrDbgOrAlloca();
                 for (AllocaInst *AI : AllocasToMove)
-                    AI->moveBefore(InsertPt);
+                    AI->moveBefore(&*InsertPt);
             }
             return PreservedAnalyses::none();
         }

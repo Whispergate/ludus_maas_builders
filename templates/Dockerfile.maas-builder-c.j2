@@ -417,6 +417,10 @@ RUN wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor -o /usr
 
 COPY --from=ollvm-builder /build/ollvm-pass/build/libOLLVMPipeline.so /opt/ollvm/lib/
 
+RUN git clone --depth 1 https://github.com/Whispergate/Shellcrypt.git /opt/shellcrypt \
+    && pip3 install --no-cache-dir --break-system-packages pycryptodome rich pyfiglet
+
 ENV OLLVM_PLUGIN=/opt/ollvm/lib/libOLLVMPipeline.so
+ENV SHELLCRYPT=/opt/shellcrypt/main.py
 
 WORKDIR /build

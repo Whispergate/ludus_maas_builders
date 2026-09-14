@@ -1,11 +1,14 @@
 ---
-- name: Install Python Docker SDK (required by community.docker modules)
-  ansible.builtin.apt:
-    name:
-      - python3-docker
-      - python3-requests
-    state: present
-    update_cache: true
+- name: Install Docker Engine
+  ansible.builtin.shell: curl -fsSL https://get.docker.com | sh
+  args:
+    creates: /usr/bin/docker
+
+- name: Ensure Docker service is running
+  ansible.builtin.systemd:
+    name: docker
+    state: started
+    enabled: true
 
 - name: Create builder directory
   ansible.builtin.file:
@@ -27,13 +30,11 @@
   loop: "{{ ludus_maas_builder_images }}"
 
 - name: Build toolchain Docker images
-  community.docker.docker_image:
-    name: "{{ item }}"
-    tag: latest
-    source: build
-    build:
-      path: "{{ ludus_maas_builder_dir }}"
-      dockerfile: "Dockerfile.{{ item }}"
-      pull: true
-    state: present
+  ansible.builtin.command:
+    cmd: >-
+      docker build
+      -t {{ item }}:latest
+      -f {{ ludus_maas_builder_dir }}/Dockerfile.{{ item }}
+      {{ ludus_maas_builder_dir }}
   loop: "{{ ludus_maas_builder_images }}"
+  changed_when: true

@@ -3,9 +3,6 @@ FROM debian:12-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc-mingw-w64-x86-64 \
     g++-mingw-w64-x86-64 \
-    clang \
-    lld \
-    llvm \
     nasm \
     make \
     cmake \
@@ -15,6 +12,44 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-pip \
     python3-pefile \
+    gnupg \
+    lsb-release \
+    software-properties-common \
+    wget \
     && rm -rf /var/lib/apt/lists/*
+
+# Install LLVM 18 from apt.llvm.org (clang, lld, llvm, dev headers)
+RUN wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor -o /usr/share/keyrings/llvm.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/bookworm/ llvm-toolchain-bookworm-18 main" \
+        > /etc/apt/sources.list.d/llvm-18.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        clang-18 \
+        lld-18 \
+        llvm-18 \
+        llvm-18-dev \
+        libclang-18-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/clang-18 /usr/bin/clang \
+    && ln -sf /usr/bin/clang++-18 /usr/bin/clang++ \
+    && ln -sf /usr/bin/lld-18 /usr/bin/lld \
+    && ln -sf /usr/bin/ld.lld-18 /usr/bin/ld.lld \
+    && ln -sf /usr/bin/llvm-config-18 /usr/bin/llvm-config
+
+# Build IRvana OLLVM passes as a shared plugin (.so)
+RUN git clone --depth 1 https://github.com/m3rcer/IRvana.git /tmp/irvana \
+    && cd /tmp/irvana/OLLVM/ollvm-pass \
+    && sed -i '/obfuscation\.def/d' obfuscation/CMakeLists.txt \
+    && sed -i '/CMAKE_CXX_COMPILER_ID.*STREQUAL.*GNU/,/endif/d' obfuscation/CMakeLists.txt \
+    && cmake -S . -B build \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_CXX_STANDARD=17 \
+        -DBUILD_SHARED_LIBS=ON \
+        -DLT_LLVM_INSTALL_DIR=/usr/lib/llvm-18 \
+    && cmake --build build -j$(nproc) \
+    && mkdir -p /opt/ollvm/lib \
+    && cp build/obfuscation/libLLVMObfuscationx.so /opt/ollvm/lib/ \
+    && rm -rf /tmp/irvana
+
+ENV OLLVM_PLUGIN=/opt/ollvm/lib/libLLVMObfuscationx.so
 
 WORKDIR /build

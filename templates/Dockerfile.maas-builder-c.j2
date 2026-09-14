@@ -1,3 +1,389 @@
+# ── Stage 1: Build the OLLVM pass plugin ─────────────────────────────────
+FROM debian:12-slim AS ollvm-builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    g++ \
+    cmake \
+    gnupg \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor -o /usr/share/keyrings/llvm.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/bookworm/ llvm-toolchain-bookworm-18 main" \
+        > /etc/apt/sources.list.d/llvm-18.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        llvm-18-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build/ollvm-pass
+
+# CMakeLists for the obfuscation pass plugin
+RUN cat > CMakeLists.txt <<'CMAKE'
+cmake_minimum_required(VERSION 3.20)
+project(ollvm-pipeline)
+
+set(LT_LLVM_INSTALL_DIR "" CACHE PATH "LLVM install prefix")
+list(APPEND CMAKE_PREFIX_PATH "${LT_LLVM_INSTALL_DIR}/lib/cmake/llvm/")
+
+find_package(LLVM 18 REQUIRED CONFIG)
+list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
+include(AddLLVM)
+
+separate_arguments(LLVM_DEFINITIONS_LIST NATIVE_COMMAND ${LLVM_DEFINITIONS})
+add_definitions(${LLVM_DEFINITIONS_LIST})
+include_directories(SYSTEM ${LLVM_INCLUDE_DIRS})
+
+set(CMAKE_CXX_STANDARD 17 CACHE STRING "")
+
+add_library(OLLVMPipeline SHARED src/main.cc)
+target_include_directories(OLLVMPipeline PRIVATE src)
+CMAKE
+
+# Obfuscation pass sources (from Pengrey/Presentations OLLVM_Workshop)
+RUN mkdir -p src
+
+# Control flow flattening - dispatcher/switch state machine
+RUN cat > src/ControlFlowFlattening.cc <<'PASS'
+#include "llvm/IR/BasicBlock.h"
+#include "llvm/IR/Function.h"
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/Instructions.h"
+#include "llvm/IR/Module.h"
+#include "llvm/IR/PassManager.h"
+#include "llvm/Passes/PassBuilder.h"
+#include "llvm/Passes/PassPlugin.h"
+#include "llvm/Support/FormatVariadic.h"
+#include "llvm/Support/raw_ostream.h"
+
+#include <vector>
+#include <map>
+
+using namespace llvm;
+
+namespace {
+
+    struct ControlFlowFlattening : public PassInfoMixin<ControlFlowFlattening> {
+        PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
+            for (Function &F : M) {
+                if (F.isDeclaration() || F.size() < 3)
+                    continue;
+
+                bool hasPHINodes = false;
+                for (BasicBlock &BB : F) {
+                    if (isa<PHINode>(BB.front())) {
+                        hasPHINodes = true;
+                        break;
+                    }
+                }
+                if (hasPHINodes)
+                    continue;
+
+                auto &CTX = F.getContext();
+                IntegerType *int32Ty = IntegerType::getInt32Ty(CTX);
+
+                BasicBlock *entryBlock = &F.getEntryBlock();
+                if (entryBlock->getTerminator()->getNumSuccessors() != 1)
+                    entryBlock->splitBasicBlock(entryBlock->getTerminator(), "entry.split");
+
+                std::vector<BasicBlock *> originalBlocks;
+                for (BasicBlock &BB : F) {
+                    if (&BB != entryBlock)
+                        originalBlocks.push_back(&BB);
+                }
+                if (originalBlocks.empty())
+                    continue;
+
+                BasicBlock *dispatcherBlock = BasicBlock::Create(CTX, "dispatcher", &F);
+                BasicBlock *defaultBlock = BasicBlock::Create(CTX, "defaultCase", &F);
+                new UnreachableInst(CTX, defaultBlock);
+                dispatcherBlock->moveAfter(entryBlock);
+                defaultBlock->moveAfter(dispatcherBlock);
+
+                IRBuilder<> allocaBuilder(&entryBlock->front());
+                AllocaInst *stateVar = allocaBuilder.CreateAlloca(int32Ty, nullptr, "state");
+
+                Instruction *entryTerm = entryBlock->getTerminator();
+                BasicBlock *firstBlock = entryTerm->getSuccessor(0);
+
+                std::map<BasicBlock *, int> blockToIdMap;
+                int currentId = 1;
+                for (BasicBlock *BB : originalBlocks)
+                    blockToIdMap[BB] = currentId++;
+
+                IRBuilder<> termBuilder(entryTerm);
+                termBuilder.CreateStore(ConstantInt::get(int32Ty, blockToIdMap[firstBlock]), stateVar);
+                termBuilder.CreateBr(dispatcherBlock);
+                entryTerm->eraseFromParent();
+
+                IRBuilder<> dispatcherBuilder(dispatcherBlock);
+                Value *loadedState = dispatcherBuilder.CreateLoad(int32Ty, stateVar, "loadedState");
+                SwitchInst *dispatchSwitch = dispatcherBuilder.CreateSwitch(loadedState, defaultBlock, originalBlocks.size());
+
+                BasicBlock* lastBlock = dispatcherBlock;
+                for (auto const& [block, id] : blockToIdMap) {
+                    dispatchSwitch->addCase(ConstantInt::get(int32Ty, id), block);
+                    block->moveAfter(lastBlock);
+                }
+
+                for (BasicBlock *BB : originalBlocks) {
+                    Instruction *terminator = BB->getTerminator();
+                    IRBuilder<> builder(terminator);
+
+                    if (isa<ReturnInst>(terminator) || isa<UnreachableInst>(terminator))
+                        continue;
+
+                    if (BranchInst *branch = dyn_cast<BranchInst>(terminator)) {
+                        if (branch->isUnconditional()) {
+                            BasicBlock *successor = branch->getSuccessor(0);
+                            builder.CreateStore(ConstantInt::get(int32Ty, blockToIdMap[successor]), stateVar);
+                            builder.CreateBr(dispatcherBlock);
+                        } else {
+                            BasicBlock *trueDest = branch->getSuccessor(0);
+                            BasicBlock *falseDest = branch->getSuccessor(1);
+                            Value *condition = branch->getCondition();
+                            Value *trueId = ConstantInt::get(int32Ty, blockToIdMap[trueDest]);
+                            Value *falseId = ConstantInt::get(int32Ty, blockToIdMap[falseDest]);
+                            Value *nextState = builder.CreateSelect(condition, trueId, falseId, "nextState");
+                            builder.CreateStore(nextState, stateVar);
+                            builder.CreateBr(dispatcherBlock);
+                        }
+                        terminator->eraseFromParent();
+                    }
+                }
+
+                std::vector<AllocaInst*> AllocasToMove;
+                for (BasicBlock &BB : F) {
+                    if (&BB == entryBlock) continue;
+                    for (Instruction &I : BB) {
+                        if (AllocaInst *AI = dyn_cast<AllocaInst>(&I))
+                            AllocasToMove.push_back(AI);
+                    }
+                }
+                BasicBlock::iterator InsertPt = entryBlock->getFirstNonPHIOrDbgOrAlloca();
+                for (AllocaInst *AI : AllocasToMove)
+                    AI->moveBefore(InsertPt);
+            }
+            return PreservedAnalyses::none();
+        }
+    };
+
+}
+PASS
+
+# Basic block splitting with dummy opaque predicates
+RUN cat > src/SplitBasicBlocks.cc <<'PASS'
+#include "llvm/IR/BasicBlock.h"
+#include "llvm/IR/Function.h"
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/Instructions.h"
+#include "llvm/IR/Module.h"
+#include "llvm/IR/PassManager.h"
+#include "llvm/Passes/PassBuilder.h"
+#include "llvm/Passes/PassPlugin.h"
+#include "llvm/Transforms/Utils/BasicBlockUtils.h"
+#include "llvm/Support/FormatVariadic.h"
+#include "llvm/Support/raw_ostream.h"
+
+#include <cstdlib>
+#include <ctime>
+
+#define SPLIT_CHANCE_PERCENT 50
+
+using namespace llvm;
+
+namespace {
+    struct SplitBasicBlocks : public PassInfoMixin<SplitBasicBlocks> {
+        PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
+            srand(time(NULL));
+
+            auto &CTX = M.getContext();
+            IntegerType *int32Ty = IntegerType::getInt32Ty(CTX);
+            FunctionCallee randFunc = M.getOrInsertFunction("rand", int32Ty);
+
+            auto containsPHI = [](const BasicBlock *BB) {
+                for (const Instruction &I : *BB) {
+                    if (isa<PHINode>(&I)) return true;
+                }
+                return false;
+            };
+
+            for (Function &F : M) {
+                if (F.isDeclaration()) continue;
+                F.addFnAttr(Attribute::NoInline);
+
+                std::vector<BasicBlock *> worklist;
+                for (BasicBlock &BB : F) {
+                    if (BB.size() >= 3 && !containsPHI(&BB))
+                        worklist.push_back(&BB);
+                }
+                if (worklist.empty()) continue;
+
+                for (BasicBlock *BB : worklist) {
+                    if ((rand() % 100) >= SPLIT_CHANCE_PERCENT)
+                        continue;
+
+                    unsigned splitIdx = 1 + (rand() % (BB->size() - 2));
+                    auto splitIt = std::next(BB->begin(), splitIdx);
+
+                    BasicBlock *successor = BB->splitBasicBlock(splitIt, BB->getName() + ".split");
+                    Instruction *oldTerminator = BB->getTerminator();
+
+                    BasicBlock *dummyBlock = BasicBlock::Create(CTX, BB->getName() + ".dummy", &F, successor);
+                    IRBuilder<>(dummyBlock).CreateBr(successor);
+
+                    bool condition = (rand() % 2 == 0);
+                    Value* fixedCond = condition ? ConstantInt::getTrue(CTX) : ConstantInt::getFalse(CTX);
+
+                    IRBuilder<> builder(oldTerminator);
+                    builder.CreateCondBr(fixedCond, successor, dummyBlock);
+                    oldTerminator->eraseFromParent();
+                }
+            }
+            return PreservedAnalyses::none();
+        }
+    };
+}
+PASS
+
+# Mixed boolean arithmetic obfuscation
+RUN cat > src/ArithmeticObf.cc <<'PASS'
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/Module.h"
+#include "llvm/IR/NoFolder.h"
+#include "llvm/Pass.h"
+#include "llvm/Passes/PassBuilder.h"
+#include "llvm/Passes/PassPlugin.h"
+#include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/FormatVariadic.h"
+
+#include <vector>
+
+#define ITERNUM 10
+
+using namespace llvm;
+
+namespace {
+    template <typename BuilderTy>
+    Value* mba_xor(Value* X, Value* Y, BuilderTy &builder) {
+        Value* orInst = builder.CreateOr(X, Y, "or_tmp");
+        Value* andInst = builder.CreateAnd(X, Y, "and_tmp");
+        return builder.CreateSub(orInst, andInst, "xor_mba");
+    }
+
+    template <typename BuilderTy>
+    Value* mba_add(Value* X, Value* Y, BuilderTy &builder) {
+        Value* andInst = builder.CreateAnd(X, Y, "and_tmp");
+        Value* orInst = builder.CreateOr(X, Y, "or_tmp");
+        return builder.CreateAdd(andInst, orInst, "add_mba");
+    }
+
+    template <typename BuilderTy>
+    Value* mba_sub(Value* X, Value* Y, BuilderTy &builder) {
+        Value* negY = builder.CreateNeg(Y, "neg_tmp");
+        Value* xorInst = builder.CreateXor(X, negY, "xor_tmp");
+        Value* andInst = builder.CreateAnd(X, negY, "and_tmp");
+        Value* shlInst = builder.CreateShl(andInst, ConstantInt::get(X->getType(), 1), "shl_tmp");
+        return builder.CreateAdd(xorInst, shlInst, "sub_mba");
+    }
+
+    template <typename BuilderTy>
+    Value* mba_and(Value* X, Value* Y, BuilderTy &builder) {
+        Value* addInst = builder.CreateAdd(X, Y, "add_tmp");
+        Value* orInst = builder.CreateOr(X, Y, "or_tmp");
+        return builder.CreateSub(addInst, orInst, "and_mba");
+    }
+
+    template <typename BuilderTy>
+    Value* mba_or(Value* X, Value* Y, BuilderTy &builder) {
+        Value* addInst = builder.CreateAdd(X, Y, "add_tmp");
+        Value* notX = builder.CreateNot(X, "notX_tmp");
+        Value* notY = builder.CreateNot(Y, "notY_tmp");
+        Value* orInst = builder.CreateOr(notX, notY, "or_tmp");
+        Value* addOne = builder.CreateAdd(addInst, ConstantInt::get(X->getType(), 1), "addOne_tmp");
+        return builder.CreateAdd(addOne, orInst, "or_mba");
+    }
+
+    struct ArithmeticObf : public PassInfoMixin<ArithmeticObf> {
+        PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
+            for (unsigned i = 0; i < ITERNUM; ++i) {
+                for (Function &F : M) {
+                    if (F.isDeclaration()) continue;
+
+                    std::vector<BinaryOperator*> worklist;
+                    for (BasicBlock &BB : F) {
+                        for (Instruction &I : BB) {
+                            if (auto *binOp = dyn_cast<BinaryOperator>(&I)) {
+                                if (binOp->getOpcode() == Instruction::Add ||
+                                    binOp->getOpcode() == Instruction::Sub ||
+                                    binOp->getOpcode() == Instruction::Xor ||
+                                    binOp->getOpcode() == Instruction::And ||
+                                    binOp->getOpcode() == Instruction::Or) {
+                                    worklist.push_back(binOp);
+                                }
+                            }
+                        }
+                    }
+                    if (worklist.empty()) continue;
+
+                    for (BinaryOperator *binOp : worklist) {
+                        IRBuilder<NoFolder> builder(binOp);
+                        Value* lhs = binOp->getOperand(0);
+                        Value* rhs = binOp->getOperand(1);
+                        Value* newInst = nullptr;
+
+                        switch (binOp->getOpcode()) {
+                            case Instruction::Add: newInst = mba_add(lhs, rhs, builder); break;
+                            case Instruction::Sub: newInst = mba_sub(lhs, rhs, builder); break;
+                            case Instruction::Xor: newInst = mba_xor(lhs, rhs, builder); break;
+                            case Instruction::And: newInst = mba_and(lhs, rhs, builder); break;
+                            case Instruction::Or:  newInst = mba_or(lhs, rhs, builder); break;
+                            default: continue;
+                        }
+                        binOp->replaceAllUsesWith(newInst);
+                        binOp->eraseFromParent();
+                    }
+                }
+            }
+            return PreservedAnalyses::all();
+        }
+    };
+}
+PASS
+
+# Plugin entry point - registers all passes in the pipeline
+RUN cat > src/main.cc <<'PASS'
+#include "llvm/Passes/PassBuilder.h"
+#include "llvm/Passes/PassPlugin.h"
+
+using namespace llvm;
+
+#include "ControlFlowFlattening.cc"
+#include "SplitBasicBlocks.cc"
+#include "ArithmeticObf.cc"
+
+extern "C" LLVM_ATTRIBUTE_WEAK PassPluginLibraryInfo llvmGetPassPluginInfo() {
+    return {
+        .APIVersion = LLVM_PLUGIN_API_VERSION,
+        .PluginName = "OLLVMPipeline",
+        .PluginVersion = "v0.1",
+        .RegisterPassBuilderCallbacks = [](PassBuilder &PB) {
+            PB.registerPipelineStartEPCallback(
+                [](ModulePassManager &MPM, OptimizationLevel Level) {
+                    MPM.addPass(ControlFlowFlattening());
+                    MPM.addPass(SplitBasicBlocks());
+                    MPM.addPass(ArithmeticObf());
+                });
+        }
+    };
+}
+PASS
+
+RUN cmake -S . -B build \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DLT_LLVM_INSTALL_DIR=/usr/lib/llvm-18 \
+    && cmake --build build -j$(nproc)
+
+# ── Stage 2: Runtime image with toolchains ───────────────────────────────
 FROM debian:12-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -5,7 +391,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     g++-mingw-w64-x86-64 \
     nasm \
     make \
-    cmake \
     git \
     curl \
     ca-certificates \
@@ -13,43 +398,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
     python3-pefile \
     gnupg \
-    lsb-release \
-    software-properties-common \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
-# Install LLVM 18 from apt.llvm.org (clang, lld, llvm, dev headers)
 RUN wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor -o /usr/share/keyrings/llvm.gpg \
     && echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/bookworm/ llvm-toolchain-bookworm-18 main" \
         > /etc/apt/sources.list.d/llvm-18.list \
     && apt-get update && apt-get install -y --no-install-recommends \
         clang-18 \
         lld-18 \
-        llvm-18 \
-        llvm-18-dev \
-        libclang-18-dev \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/bin/clang-18 /usr/bin/clang \
     && ln -sf /usr/bin/clang++-18 /usr/bin/clang++ \
     && ln -sf /usr/bin/lld-18 /usr/bin/lld \
-    && ln -sf /usr/bin/ld.lld-18 /usr/bin/ld.lld \
-    && ln -sf /usr/bin/llvm-config-18 /usr/bin/llvm-config
+    && ln -sf /usr/bin/ld.lld-18 /usr/bin/ld.lld
 
-# Build IRvana OLLVM passes as a shared plugin (.so)
-RUN git clone --depth 1 https://github.com/m3rcer/IRvana.git /tmp/irvana \
-    && cd /tmp/irvana/OLLVM/ollvm-pass \
-    && sed -i '/obfuscation\.def/d' obfuscation/CMakeLists.txt \
-    && sed -i '/CMAKE_CXX_COMPILER_ID.*STREQUAL.*GNU/,/endif/d' obfuscation/CMakeLists.txt \
-    && cmake -S . -B build \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_CXX_STANDARD=17 \
-        -DBUILD_SHARED_LIBS=ON \
-        -DLT_LLVM_INSTALL_DIR=/usr/lib/llvm-18 \
-    && cmake --build build -j$(nproc) \
-    && mkdir -p /opt/ollvm/lib \
-    && cp build/obfuscation/libLLVMObfuscationx.so /opt/ollvm/lib/ \
-    && rm -rf /tmp/irvana
+COPY --from=ollvm-builder /build/ollvm-pass/build/libOLLVMPipeline.so /opt/ollvm/lib/
 
-ENV OLLVM_PLUGIN=/opt/ollvm/lib/libLLVMObfuscationx.so
+ENV OLLVM_PLUGIN=/opt/ollvm/lib/libOLLVMPipeline.so
 
 WORKDIR /build

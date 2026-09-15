@@ -17,7 +17,7 @@ ENV PATH="/root/.nimble/bin:${PATH}"
 RUN nimble install winim -y
 
 RUN git clone --depth 1 https://github.com/Whispergate/Shellcrypt.git /opt/shellcrypt \
-    && pip3 install --no-cache-dir --break-system-packages pycryptodome rich pyfiglet
+    && pip3 install --no-cache-dir --break-system-packages pycryptodome rich pyfiglet pyyaml
 
 ENV SHELLCRYPT=/opt/shellcrypt/main.py
 

@@ -1,8 +1,5 @@
-FROM golang:1.23-bookworm
+FROM golang:1.26
 
-# garble@latest may require a newer Go toolchain than this base image ships.
-# The official golang images pin GOTOOLCHAIN=local (no auto-download); switch to
-# auto so `go install` fetches the toolchain the module's go.mod requires.
 ENV GOTOOLCHAIN=auto
 
 RUN go install mvdan.cc/garble@latest
@@ -18,7 +15,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN git clone --depth 1 https://github.com/Whispergate/Shellcrypt.git /opt/shellcrypt \
     && pip3 install --no-cache-dir --break-system-packages -r /opt/shellcrypt/requirements.txt
 
-ENV PATH="/root/go/bin:${PATH}"
+RUN chmod a+x /root \
+    && mkdir -p /root/.cache \
+    && chmod -R a+rwX /root/.cache /go
+ENV HOME=/root
 ENV SHELLCRYPT=/opt/shellcrypt/main.py
 
 WORKDIR /build

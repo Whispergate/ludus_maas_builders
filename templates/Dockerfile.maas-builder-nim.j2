@@ -11,10 +11,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-RUN curl -sSf https://nim-lang.org/choosenim/init.sh | bash -s -- -y
+RUN curl -sSf https://nim-lang.org/choosenim/init.sh | bash -s -- -y \
+    && chmod a+x /root \
+    && chmod -R a+rX /root/.nimble /root/.choosenim
+ENV HOME=/root
 ENV PATH="/root/.nimble/bin:${PATH}"
 
-RUN nimble install winim -y
+RUN nimble install winim -y \
+    && chmod -R a+rX /root/.nimble
 
 RUN git clone --depth 1 https://github.com/Whispergate/Shellcrypt.git /opt/shellcrypt \
     && pip3 install --no-cache-dir --break-system-packages -r /opt/shellcrypt/requirements.txt

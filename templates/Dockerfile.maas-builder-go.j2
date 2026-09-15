@@ -11,8 +11,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc-mingw-w64-x86-64 \
     git \
     ca-certificates \
+    python3 \
+    python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
+RUN git clone --depth 1 https://github.com/Whispergate/Shellcrypt.git /opt/shellcrypt \
+    && pip3 install --no-cache-dir --break-system-packages pycryptodome rich pyfiglet
+
 ENV PATH="/root/go/bin:${PATH}"
+ENV SHELLCRYPT=/opt/shellcrypt/main.py
 
 WORKDIR /build

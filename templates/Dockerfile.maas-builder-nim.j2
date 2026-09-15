@@ -7,11 +7,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     xz-utils \
     ca-certificates \
+    python3 \
+    python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl -sSf https://nim-lang.org/choosenim/init.sh | bash -s -- -y
 ENV PATH="/root/.nimble/bin:${PATH}"
 
 RUN nimble install winim -y
+
+RUN git clone --depth 1 https://github.com/Whispergate/Shellcrypt.git /opt/shellcrypt \
+    && pip3 install --no-cache-dir --break-system-packages pycryptodome rich pyfiglet
+
+ENV SHELLCRYPT=/opt/shellcrypt/main.py
 
 WORKDIR /build

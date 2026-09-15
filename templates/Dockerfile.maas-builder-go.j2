@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 RUN git clone --depth 1 https://github.com/Whispergate/Shellcrypt.git /opt/shellcrypt \
-    && pip3 install --no-cache-dir --break-system-packages pycryptodome rich pyfiglet pyyaml
+    && pip3 install --no-cache-dir --break-system-packages -r /opt/shellcrypt/requirements.txt
 
 ENV PATH="/root/go/bin:${PATH}"
 ENV SHELLCRYPT=/opt/shellcrypt/main.py

@@ -14,8 +14,9 @@ Ansible role that builds Docker toolchain images for the MAAS payload compilatio
 | Image | Contents |
 |-------|----------|
 | `maas-builder-c` | Debian 12, MinGW (x86_64), Clang, LLD, LLVM, NASM, CMake, Python 3 + pefile |
-| `maas-builder-go` | Go 1.23, Garble (latest), MinGW (for CGO cross-compilation) |
+| `maas-builder-go` | Go 1.26, Garble (latest), MinGW (for CGO cross-compilation) |
 | `maas-builder-nim` | Nim (latest via choosenim), MinGW (x86_64), winim library |
+| `maas-builder-rust` | Rust 1.82, x86_64-pc-windows-gnu target, MinGW (x86_64) |
 
 ## Requirements
 
@@ -27,7 +28,7 @@ Ansible role that builds Docker toolchain images for the MAAS payload compilatio
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ludus_maas_builder_images` | `[maas-builder-c, maas-builder-go, maas-builder-nim]` | List of images to build |
+| `ludus_maas_builder_images` | `[maas-builder-c, maas-builder-go, maas-builder-rust, maas-builder-nim]` | List of images to build |
 | `ludus_maas_builder_dir` | `/opt/maas-builders` | Directory for Dockerfiles |
 | `ludus_maas_shared_volume` | `/payloads` | Shared volume path for build artifacts |
 
@@ -53,7 +54,7 @@ Ansible role that builds Docker toolchain images for the MAAS payload compilatio
     ludus_maas_builder_images:
       - maas-builder-c
       - maas-builder-go
-      - maas-builder-nim
+      - maas-builder-rust
 ```
 
 ## Customisation

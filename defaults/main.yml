@@ -2,7 +2,7 @@
 ludus_maas_builder_images:
   - maas-builder-c
   - maas-builder-go
-  - maas-builder-nim
+  - maas-builder-rust
 
 ludus_maas_builder_dir: /opt/maas-builders
 ludus_maas_shared_volume: /payloads

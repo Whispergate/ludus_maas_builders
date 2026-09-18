@@ -1,28 +1,75 @@
+FROM maas-builder-c AS ollvm-source
+
 FROM debian:12-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     gcc-mingw-w64-x86-64 \
+    g++-mingw-w64-x86-64 \
     curl \
     git \
     xz-utils \
     ca-certificates \
     python3 \
     python3-pip \
+    gnupg \
+    wget \
     && rm -rf /var/lib/apt/lists/*
 
+# clang-18 for Nimcrypt2 OLLVM support (-l flag)
+RUN wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor -o /usr/share/keyrings/llvm.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/bookworm/ llvm-toolchain-bookworm-18 main" \
+        > /etc/apt/sources.list.d/llvm-18.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        clang-18 \
+        lld-18 \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/clang-18 /usr/bin/clang \
+    && ln -sf /usr/bin/clang++-18 /usr/bin/clang++ \
+    && ln -sf /usr/bin/lld-18 /usr/bin/lld \
+    && ln -sf /usr/bin/ld.lld-18 /usr/bin/ld.lld
+
+COPY --from=ollvm-source /opt/ollvm/lib/libOLLVMPipeline.so /opt/ollvm/lib/
+
+# wclang-style wrapper scripts that route through OLLVM pass plugin
+RUN printf '#!/bin/sh\nexec clang-18 --target=x86_64-w64-mingw32 -fpass-plugin=/opt/ollvm/lib/libOLLVMPipeline.so "$@"\n' \
+        > /usr/local/bin/x86_64-w64-mingw32-clang \
+    && printf '#!/bin/sh\nexec clang-18 --target=x86_64-w64-mingw32 -fpass-plugin=/opt/ollvm/lib/libOLLVMPipeline.so "$@"\n' \
+        > /usr/local/bin/x86_64-w64-mingw32-clang++ \
+    && chmod +x /usr/local/bin/x86_64-w64-mingw32-clang \
+                /usr/local/bin/x86_64-w64-mingw32-clang++
+
+# Nim via choosenim
 RUN curl -sSf https://nim-lang.org/choosenim/init.sh | bash -s -- -y \
     && chmod a+x /root \
     && chmod -R a+rX /root/.nimble /root/.choosenim
 ENV HOME=/root
 ENV PATH="/root/.nimble/bin:${PATH}"
 
-RUN nimble install winim -y \
+# Nimcrypt2 nimble dependencies
+RUN nimble install winim nimcrypto docopt ptr_math strenc -y \
+    && chmod -R a+rX /root/.nimble
+
+# Point nim at the OLLVM cross-compiler wrappers
+RUN mkdir -p /etc/nim \
+    && printf 'amd64.windows.clang.exe = "x86_64-w64-mingw32-clang"\n\
+amd64.windows.clang.linkerexe = "x86_64-w64-mingw32-clang"\n\
+amd64.windows.clang.cpp.exe = "x86_64-w64-mingw32-clang++"\n\
+amd64.windows.clang.cpp.linkerexe = "x86_64-w64-mingw32-clang++"\n' \
+        > /etc/nim/nim.cfg
+
+# Build Nimcrypt2
+RUN git clone --depth 1 https://github.com/icyguider/Nimcrypt2.git /opt/nimcrypt2-src \
+    && cd /opt/nimcrypt2-src \
+    && nim c -d=release --cc:gcc --embedsrc=on --hints=on --app=console --cpu=amd64 \
+        --out=/usr/local/bin/nimcrypt nimcrypt.nim \
+    && chmod a+rx /usr/local/bin/nimcrypt \
     && chmod -R a+rX /root/.nimble
 
 RUN git clone --depth 1 https://github.com/Whispergate/Shellcrypt.git /opt/shellcrypt \
     && pip3 install --no-cache-dir --break-system-packages -r /opt/shellcrypt/requirements.txt
 
+ENV OLLVM_PLUGIN=/opt/ollvm/lib/libOLLVMPipeline.so
 ENV SHELLCRYPT=/opt/shellcrypt/main.py
 
 WORKDIR /build

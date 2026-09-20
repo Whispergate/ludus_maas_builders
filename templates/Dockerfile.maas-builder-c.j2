@@ -401,6 +401,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pefile \
     gnupg \
     wget \
+    libssl-dev openssl osslsigncode \
     && rm -rf /var/lib/apt/lists/*
 
 RUN wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor -o /usr/share/keyrings/llvm.gpg \

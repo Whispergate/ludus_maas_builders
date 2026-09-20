@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     python3 \
     python3-pip \
-    libssl-dev openssl \
+    libssl-dev openssl osslsigncode \
     && rm -rf /var/lib/apt/lists/*
 
 RUN go install github.com/Tylous/Limelighter@latest \

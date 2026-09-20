@@ -18,6 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN git clone --depth 1 --recurse-submodules https://github.com/Whispergate/Calypso.git /opt/calypso \
     && cd /opt/calypso \
     && make \
-    && ln -s /opt/calypso/build/calypso /usr/local/bin/calypso
+    && cp build/calypso /opt/calypso/calypso \
+    && ln -s /opt/calypso/calypso /usr/local/bin/calypso
 
 WORKDIR /build

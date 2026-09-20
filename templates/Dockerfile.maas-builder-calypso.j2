@@ -1,0 +1,23 @@
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    g++-14 \
+    gcc-14 \
+    mingw-w64 \
+    make \
+    git \
+    ca-certificates \
+    && update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 100 \
+    && update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100 \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Build Calypso packer with donut_ollvm submodule
+RUN git clone --depth 1 --recurse-submodules https://github.com/Whispergate/Calypso.git /opt/calypso \
+    && cd /opt/calypso \
+    && make \
+    && ln -s /opt/calypso/build/calypso /usr/local/bin/calypso
+
+WORKDIR /build

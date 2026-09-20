@@ -6,6 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     gcc-mingw-w64-x86-64 \
     g++-mingw-w64-x86-64 \
+    make \
     curl \
     git \
     xz-utils \
@@ -17,7 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl-dev openssl osslsigncode \
     && rm -rf /var/lib/apt/lists/*
 
-# clang-18 for Nimcrypt2 OLLVM support (-l flag)
+# clang-18 for OLLVM support (NimSyscallPacker --ollvm flag)
 RUN wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor -o /usr/share/keyrings/llvm.gpg \
     && echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/bookworm/ llvm-toolchain-bookworm-18 main" \
         > /etc/apt/sources.list.d/llvm-18.list \
@@ -32,7 +33,6 @@ RUN wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor -o /usr
 
 COPY --from=ollvm-source /opt/ollvm/lib/libOLLVMPipeline.so /opt/ollvm/lib/
 
-# wclang-style wrapper scripts that route through OLLVM pass plugin
 RUN printf '#!/bin/sh\nexec clang-18 --target=x86_64-w64-mingw32 -fpass-plugin=/opt/ollvm/lib/libOLLVMPipeline.so "$@"\n' \
         > /usr/local/bin/x86_64-w64-mingw32-clang \
     && printf '#!/bin/sh\nexec clang-18 --target=x86_64-w64-mingw32 -fpass-plugin=/opt/ollvm/lib/libOLLVMPipeline.so "$@"\n' \
@@ -40,18 +40,19 @@ RUN printf '#!/bin/sh\nexec clang-18 --target=x86_64-w64-mingw32 -fpass-plugin=/
     && chmod +x /usr/local/bin/x86_64-w64-mingw32-clang \
                 /usr/local/bin/x86_64-w64-mingw32-clang++
 
-# Nim via choosenim
-RUN curl -sSf https://nim-lang.org/choosenim/init.sh | bash -s -- -y \
+# Nim 2.2.10 via choosenim
+RUN curl -sSf https://nim-lang.org/choosenim/init.sh | CHOOSENIM_CHOOSE_VERSION=2.2.10 bash -s -- -y \
     && chmod a+x /root \
     && chmod -R a+rX /root/.nimble /root/.choosenim
 ENV HOME=/root
 ENV PATH="/root/.nimble/bin:${PATH}"
 
-# Nimcrypt2 nimble dependencies
-RUN nimble install winim nimcrypto docopt ptr_math strenc -y \
+# NimSyscallPacker nimble dependencies (pinned versions)
+RUN nimble install -y nimcrypto@0.6.0 docopt@0.7.1 ptr_math@0.3.0 winim@3.9.4 \
+        https://github.com/S3cur3Th1sSh1t/nim-strenc/ \
     && chmod -R a+rX /root/.nimble
 
-# Point nim at the OLLVM cross-compiler wrappers
+# Nim cross-compiler config for OLLVM wrappers
 RUN mkdir -p /etc/nim \
     && printf 'amd64.windows.clang.exe = "x86_64-w64-mingw32-clang"\n\
 amd64.windows.clang.linkerexe = "x86_64-w64-mingw32-clang"\n\
@@ -59,12 +60,17 @@ amd64.windows.clang.cpp.exe = "x86_64-w64-mingw32-clang++"\n\
 amd64.windows.clang.cpp.linkerexe = "x86_64-w64-mingw32-clang++"\n' \
         > /etc/nim/nim.cfg
 
-# Build Nimcrypt2
-RUN git clone --depth 1 https://github.com/icyguider/Nimcrypt2.git /opt/nimcrypt2-src \
-    && cd /opt/nimcrypt2-src \
-    && nim c -d=release --cc:gcc --embedsrc=on --hints=on --app=console --cpu=amd64 \
-        --out=/usr/local/bin/nimcrypt nimcrypt.nim \
-    && chmod a+rx /usr/local/bin/nimcrypt \
+# donut (syscalls branch) for PE injection
+RUN cd /opt && git clone --depth 1 --branch syscalls https://github.com/S4ntiagoP/donut.git \
+    && cd donut && make
+ENV PATH="/opt/donut:${PATH}"
+
+# Build NimSyscallPacker (binary must stay in source dir — it uses getAppDir() to find its .nim modules)
+RUN git clone --depth 1 https://github.com/Whispergate/NimSyscallPacker.git /opt/nimsyscallpacker \
+    && cd /opt/nimsyscallpacker \
+    && nim c -d:noRES NimSyscallLoader.nim \
+    && chmod a+rx /opt/nimsyscallpacker/NimSyscallLoader \
+    && ln -s /opt/nimsyscallpacker/NimSyscallLoader /usr/local/bin/NimSyscallLoader \
     && chmod -R a+rX /root/.nimble
 
 RUN git clone --depth 1 https://github.com/Whispergate/Shellcrypt.git /opt/shellcrypt \

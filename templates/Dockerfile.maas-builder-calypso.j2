@@ -2,23 +2,45 @@ FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+# ── Base toolchain ──────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     g++-14 \
     gcc-14 \
     mingw-w64 \
     make \
+    cmake \
+    ninja-build \
     git \
     ca-certificates \
+    wget \
+    lsb-release \
+    software-properties-common \
+    gnupg \
     && update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 100 \
     && update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100 \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Build Calypso packer with donut_ollvm submodule
+# ── LLVM 21 + Obfuscator-LLVM plugin ───────────────────────────────
+RUN wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor -o /usr/share/keyrings/llvm.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" \
+       > /etc/apt/sources.list.d/llvm-21.list \
+    && apt-get update && apt-get install -y --no-install-recommends llvm-21-dev clang-21 \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+RUN git clone --depth 1 https://github.com/eshard/obfuscator-llvm /tmp/obfuscator-llvm \
+    && cd /tmp/obfuscator-llvm \
+    && mkdir build && cd build \
+    && cmake -G "Ninja" -DLLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm .. \
+    && ninja -j$(nproc) \
+    && mkdir -p /opt/llvm \
+    && cp libLLVMObfuscator.so /opt/llvm/libLLVMObfuscator.so \
+    && rm -rf /tmp/obfuscator-llvm
+
+# ── Build Calypso packer with donut_ollvm submodule ─────────────────
 RUN git clone --depth 1 --recurse-submodules https://github.com/Whispergate/Calypso.git /opt/calypso \
     && cd /opt/calypso \
     && make \
-    && cp build/calypso /opt/calypso/calypso \
-    && ln -s /opt/calypso/calypso /usr/local/bin/calypso
+    && ln -s /opt/calypso/build/calypso /usr/local/bin/calypso
 
 WORKDIR /build
